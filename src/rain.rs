@@ -1,0 +1,251 @@
+//! The rain simulation and a double-buffered diff renderer.
+//!
+//! Each column hosts independent falling "streams". A stream owns its own
+//! column of glyphs, a fractional head position (so motion is smooth and
+//! sub-cell), a speed, and a length. Trails fade via the theme gradient, and
+//! glyphs mutate in place so the rain shimmers instead of scrolling rigidly.
+
+use crate::glyphs;
+use crate::theme::Theme;
+use crossterm::style::Color;
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+
+/// One falling stream within a column.
+struct Stream {
+    /// Row of the leading glyph, fractional for smooth motion. Grows downward.
+    head: f32,
+    /// Rows per second.
+    speed: f32,
+    /// Number of glyphs from head to faded tail.
+    len: usize,
+    /// Glyphs, index 0 == head, increasing index == further up the trail.
+    glyphs: Vec<char>,
+}
+
+/// A single rendered cell: glyph + foreground color.
+#[derive(Clone, Copy, PartialEq)]
+struct Cell {
+    ch: char,
+    color: Color,
+}
+
+impl Cell {
+    const BLANK: Cell = Cell {
+        ch: ' ',
+        color: Color::Reset,
+    };
+}
+
+pub struct Rain {
+    cols: u16,
+    rows: u16,
+    theme: Theme,
+    /// Per-column list of active streams.
+    streams: Vec<Vec<Stream>>,
+    /// Brightness composite buffer (reused each frame to avoid allocation).
+    bright: Vec<f32>,
+    /// Back buffer being drawn into this frame.
+    back: Vec<Cell>,
+    /// Front buffer = what is currently on screen.
+    front: Vec<Cell>,
+    rng: SmallRng,
+    /// Spawn density: higher = more streams per column.
+    density: f32,
+    /// How fast glyphs mutate, scaled per second.
+    mutation: f32,
+    pool: Vec<char>,
+}
+
+impl Rain {
+    pub fn new(cols: u16, rows: u16, theme: Theme, density: f32, mutation: f32) -> Self {
+        let n = cols as usize * rows as usize;
+        let mut rain = Rain {
+            cols,
+            rows,
+            theme,
+            streams: (0..cols).map(|_| Vec::new()).collect(),
+            bright: vec![0.0; n],
+            back: vec![Cell::BLANK; n],
+            front: vec![Cell::BLANK; n],
+            rng: SmallRng::from_entropy(),
+            density,
+            mutation,
+            pool: glyphs::alphabet(),
+        };
+        // Seed the screen so it isn't empty on the first frame.
+        for _ in 0..(cols as usize / 2) {
+            let c = rain.rng.gen_range(0..cols);
+            let head = rain.rng.gen_range(0.0..rows as f32);
+            rain.spawn(c, head);
+        }
+        rain
+    }
+
+    /// Resize the grid, preserving the theme/params and reseeding buffers.
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        *self = Rain::new(cols, rows, self.theme, self.density, self.mutation);
+    }
+
+    fn spawn(&mut self, col: u16, head: f32) {
+        let max_len = ((self.rows as f32) * 0.7) as usize;
+        let len = self.rng.gen_range(6..=max_len.max(8));
+        let speed = self.rng.gen_range(6.0..26.0);
+        let glyphs = (0..len)
+            .map(|_| glyphs::random_glyph(&mut self.rng, &self.pool))
+            .collect();
+        self.streams[col as usize].push(Stream {
+            head,
+            speed,
+            len,
+            glyphs,
+        });
+    }
+
+    /// Advance the simulation by `dt` seconds.
+    pub fn update(&mut self, dt: f32) {
+        let rows = self.rows as f32;
+
+        // Borrow the fields the hot loop touches disjointly so the closure
+        // below doesn't conflict with the `self.streams` borrow.
+        let Rain {
+            streams,
+            rng,
+            pool,
+            mutation,
+            density,
+            cols,
+            ..
+        } = self;
+        let mutation = *mutation;
+        let density = *density;
+
+        for col in 0..*cols {
+            let streams = &mut streams[col as usize];
+
+            // Advance, mutate, and retire streams.
+            streams.retain_mut(|s| {
+                s.head += s.speed * dt;
+
+                // Occasionally swap glyphs so the trail shimmers. Probability
+                // scales with dt so it's frame-rate independent.
+                let p = (mutation * dt).min(1.0);
+                for g in s.glyphs.iter_mut() {
+                    if rng.r#gen::<f32>() < p {
+                        *g = pool[rng.gen_range(0..pool.len())];
+                    }
+                }
+
+                // Keep until the whole trail has scrolled off the bottom.
+                s.head - s.len as f32 <= rows
+            });
+
+            // Spawn new streams once the topmost has descended enough to leave a
+            // gap, gated by density so columns don't saturate.
+            let spawn_ok = streams
+                .iter()
+                .all(|s| s.head >= s.len as f32 + rng.gen_range(0.0..6.0));
+            if spawn_ok && rng.r#gen::<f32>() < density * dt {
+                let len = rng.gen_range(6..=((rows * 0.7) as usize).max(8));
+                let speed = rng.gen_range(6.0..26.0);
+                let glyphs = (0..len).map(|_| glyphs::random_glyph(rng, pool)).collect();
+                streams.push(Stream {
+                    head: 0.0,
+                    speed,
+                    len,
+                    glyphs,
+                });
+            }
+        }
+
+        self.composite();
+    }
+
+    /// Composite all streams into the brightness + back buffers.
+    fn composite(&mut self) {
+        for b in self.bright.iter_mut() {
+            *b = -1.0; // sentinel: "no glyph here"
+        }
+        for c in self.back.iter_mut() {
+            *c = Cell::BLANK;
+        }
+
+        let cols = self.cols as usize;
+        let rows = self.rows as i32;
+
+        for col in 0..self.cols {
+            for s in &self.streams[col as usize] {
+                let head_i = s.head.floor() as i32;
+                for d in 0..s.len {
+                    let r = head_i - d as i32;
+                    if r < 0 || r >= rows {
+                        continue;
+                    }
+                    // Brightness: 1.0 at head, fading linearly up the trail.
+                    let brightness = 1.0 - (d as f32 / s.len as f32);
+                    let idx = r as usize * cols + col as usize;
+
+                    // When streams overlap, the brighter one wins.
+                    if brightness <= self.bright[idx] {
+                        continue;
+                    }
+                    self.bright[idx] = brightness;
+
+                    let is_head = d == 0;
+                    let color = self.theme.color(brightness, is_head, col, self.cols);
+                    self.back[idx] = Cell {
+                        ch: s.glyphs[d],
+                        color,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Emit only the cells that changed since the last frame.
+    ///
+    /// Returns a list of `(col, row, cell)` draw ops; the caller turns these
+    /// into terminal writes. Front buffer is updated to match.
+    pub fn diff(&mut self) -> Vec<(u16, u16, char, Color)> {
+        let cols = self.cols as usize;
+        let mut ops = Vec::new();
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let idx = row as usize * cols + col as usize;
+                let nb = self.back[idx];
+                if nb != self.front[idx] {
+                    self.front[idx] = nb;
+                    ops.push((col, row, nb.ch, nb.color));
+                }
+            }
+        }
+        ops
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_run_and_draw_without_panic() {
+        let mut rain = Rain::new(80, 24, Theme::Green, 1.5, 8.0);
+        let mut total_ops = 0;
+        // Many frames at a fixed dt should advance, retire, and respawn streams
+        // across the whole grid without ever indexing out of bounds.
+        for _ in 0..600 {
+            rain.update(1.0 / 60.0);
+            total_ops += rain.diff().len();
+        }
+        assert!(total_ops > 0, "expected the rain to draw something");
+    }
+
+    #[test]
+    fn resize_to_tiny_grid_is_safe() {
+        let mut rain = Rain::new(80, 24, Theme::Cyan, 1.0, 5.0);
+        rain.update(0.016);
+        rain.resize(1, 1);
+        rain.update(0.5); // large dt jump shouldn't panic
+        let _ = rain.diff();
+    }
+}

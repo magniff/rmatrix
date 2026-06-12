@@ -10,8 +10,8 @@ film's actual glyph mix.
 ## Features
 
 - **True-color trails** — every cell gets a 24-bit color interpolated along a
-  glow curve: a hot, bold, near-white head bleeding down into the theme color
-  and finally into darkness at the tail.
+  glow curve: a hot, bold, near-white head bleeding down into the classic
+  green and finally into darkness at the tail.
 - **Ripples** — waves of brightness travel across the rain: point splashes
   blooming out of a spot, and wide planar waves sweeping in from off-screen.
   Each wave rolls its own strength; the hot ones overdrive the code toward
@@ -23,8 +23,6 @@ film's actual glyph mix.
   their double-width cells.
 - **Living rain** — streams fall at fractional speeds with glyphs anchored in
   screen space, shimmering by in-place mutation rather than scrolling rigidly.
-- **Themes** — green, cyan, amber, purple, and a rainbow that sweeps hue
-  across the screen width.
 
 ## Install & run
 
@@ -38,7 +36,6 @@ cargo run --release
 ## Options
 
 ```
--c, --color <THEME>   green | cyan | amber | purple | rainbow  (default: green)
 -d, --density <N>     stream spawn density, higher = denser    (default: 0.9)
 -m, --mutation <N>    glyph flicker rate, higher = busier      (default: 8.0)
 -f, --fps <N>         target frames per second                 (default: 60)
@@ -51,7 +48,6 @@ cargo run --release
 | ------------- | ------------------------------------------- |
 | `q` / `Esc` / `Ctrl-C` | quit                               |
 | `space`       | pause / resume                              |
-| `1`..`5`      | switch theme (green/cyan/amber/purple/rainbow) |
 | `+` / `-`     | faster / slower glyph mutation              |
 | `r`           | drop a ripple at a random spot              |
 | `w`           | send a wide wave sweeping across            |

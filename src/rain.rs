@@ -2,15 +2,61 @@
 //!
 //! Each column hosts independent falling "streams". A stream owns its own
 //! column of glyphs, a fractional head position (so motion is smooth and
-//! sub-cell), a speed, and a length. Trails fade via the theme gradient, and
+//! sub-cell), a speed, and a length. Trails fade via the glow gradient, and
 //! glyphs mutate in place so the rain shimmers instead of scrolling rigidly.
 
 use crate::glyphs;
 use crate::ripple::Ripples;
-use crate::theme::Theme;
 use crossterm::style::Color;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+
+/// The fully-lit (non-head) trail color: the classic Matrix green.
+const BASE: (u8, u8, u8) = (40, 255, 90);
+
+#[inline]
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+/// Color for a cell.
+///
+/// `brightness` is how lit the cell is: `0.0..=1.0` along the trail (1.0 at
+/// the head), and *above* 1.0 when a ripple overdrives the cell — the excess
+/// bleeds the color toward white so hot code glows.
+fn color(brightness: f32, is_head: bool) -> Color {
+    let (br, bg, bb) = BASE;
+
+    let (mut r, mut g, mut b) = if is_head {
+        // Hot head: blow the base color out toward white for a glow/bloom.
+        let mix = 0.75; // how far toward white
+        (
+            lerp(br as f32, 255.0, mix),
+            lerp(bg as f32, 255.0, mix),
+            lerp(bb as f32, 255.0, mix),
+        )
+    } else {
+        // Gamma-shaped falloff makes the trail linger bright then drop off
+        // fast, which reads as a glow rather than a linear ramp.
+        let t = brightness.clamp(0.0, 1.0).powf(1.6);
+        (br as f32 * t, bg as f32 * t, bb as f32 * t)
+    };
+
+    // Overdrive: ripple-boosted brightness beyond 1.0 bleeds toward white
+    // (capped short of pure white so the green still tints it).
+    let over = (brightness - 1.0).clamp(0.0, 1.0) * 0.85;
+    if over > 0.0 {
+        r = lerp(r, 255.0, over);
+        g = lerp(g, 255.0, over);
+        b = lerp(b, 255.0, over);
+    }
+
+    Color::Rgb {
+        r: r as u8,
+        g: g as u8,
+        b: b as u8,
+    }
+}
 
 /// One falling stream within a column.
 struct Stream {
@@ -50,7 +96,6 @@ impl Cell {
 pub struct Rain {
     cols: u16,
     rows: u16,
-    theme: Theme,
     /// Per-column list of active streams.
     streams: Vec<Vec<Stream>>,
     /// Brightness composite buffer (reused each frame to avoid allocation).
@@ -73,13 +118,12 @@ pub struct Rain {
 }
 
 impl Rain {
-    pub fn new(cols: u16, rows: u16, theme: Theme, density: f32, mutation: f32) -> Self {
+    pub fn new(cols: u16, rows: u16, density: f32, mutation: f32) -> Self {
         let n = cols as usize * rows as usize;
         let (pool, narrow) = glyphs::alphabet();
         let mut rain = Rain {
             cols,
             rows,
-            theme,
             streams: (0..cols).map(|_| Vec::new()).collect(),
             bright: vec![0.0; n],
             back: vec![Cell::BLANK; n],
@@ -100,9 +144,9 @@ impl Rain {
         rain
     }
 
-    /// Resize the grid, preserving the theme/params and reseeding buffers.
+    /// Resize the grid, preserving the params and reseeding buffers.
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        *self = Rain::new(cols, rows, self.theme, self.density, self.mutation);
+        *self = Rain::new(cols, rows, self.density, self.mutation);
     }
 
     /// The glyph pool a column may draw from: the last column can't host
@@ -244,10 +288,9 @@ impl Rain {
                     // color toward white, so overdriven cells glow hot.
                     let boost = self.ripples.boost(col, r as u16);
                     let lit = brightness + boost;
-                    let color = self.theme.color(lit, is_head, col, self.cols);
                     self.back[idx] = Cell {
                         ch: s.glyphs[d],
-                        color,
+                        color: color(lit, is_head),
                         // Heads are bold, and so is anything a wavefront is
                         // hitting hard enough to clearly light up — the
                         // threshold keeps faint shimmer from flickering bold.
@@ -320,7 +363,7 @@ mod tests {
 
     #[test]
     fn frames_run_and_draw_without_panic() {
-        let mut rain = Rain::new(80, 24, Theme::Green, 1.5, 8.0);
+        let mut rain = Rain::new(80, 24, 1.5, 8.0);
         let mut total_ops = 0;
         // Many frames at a fixed dt should advance, retire, and respawn streams
         // across the whole grid without ever indexing out of bounds.
@@ -338,7 +381,7 @@ mod tests {
         // glyphs below, it never shifts the existing trail. One column and
         // zero density guarantee a single stream, so overlap (where the
         // brighter stream legitimately wins a cell) can't confuse the check.
-        let mut rain = Rain::new(1, 40, Theme::Green, 0.0, 0.0);
+        let mut rain = Rain::new(1, 40, 0.0, 0.0);
         rain.streams[0].clear();
         rain.spawn(0, 5.0);
         rain.update(1.0 / 60.0);
@@ -359,7 +402,7 @@ mod tests {
 
     #[test]
     fn resize_to_tiny_grid_is_safe() {
-        let mut rain = Rain::new(80, 24, Theme::Cyan, 1.0, 5.0);
+        let mut rain = Rain::new(80, 24, 1.0, 5.0);
         rain.update(0.016);
         rain.resize(1, 1);
         rain.update(0.5); // large dt jump shouldn't panic

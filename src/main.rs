@@ -4,7 +4,6 @@
 mod glyphs;
 mod rain;
 mod ripple;
-mod theme;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -24,10 +23,8 @@ use crossterm::terminal::{
 use crossterm::{ExecutableCommand, QueueableCommand};
 
 use rain::Rain;
-use theme::Theme;
 
 struct Config {
-    theme: Theme,
     density: f32,
     mutation: f32,
     fps: u32,
@@ -36,7 +33,6 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            theme: Theme::Green,
             density: 0.9,
             mutation: 8.0,
             fps: 60,
@@ -51,7 +47,6 @@ USAGE:
     rmatrix [OPTIONS]
 
 OPTIONS:
-    -c, --color <THEME>   green | cyan | amber | purple | rainbow  (default: green)
     -d, --density <N>     stream spawn density, higher = denser     (default: 0.9)
     -m, --mutation <N>    glyph flicker rate, higher = busier        (default: 8.0)
     -f, --fps <N>         target frames per second                   (default: 60)
@@ -60,7 +55,6 @@ OPTIONS:
 KEYS (while running):
     q / Esc / Ctrl-C   quit
     space              pause / resume
-    1..5               switch theme (green/cyan/amber/purple/rainbow)
     + / -              faster / slower glyph mutation
     r                  drop a ripple at a random spot
     w                  send a wide wave sweeping across
@@ -75,9 +69,6 @@ fn parse_args() -> Result<Config, String> {
             "-h" | "--help" => {
                 print!("{HELP}");
                 std::process::exit(0);
-            }
-            "-c" | "--color" => {
-                cfg.theme = args.next().ok_or("--color needs a value")?.parse()?
             }
             "-d" | "--density" => {
                 cfg.density = args
@@ -152,7 +143,7 @@ fn run(mut cfg: Config) -> io::Result<()> {
 
 fn event_loop(out: &mut io::Stdout, cfg: &mut Config) -> io::Result<()> {
     let (mut cols, mut rows) = terminal::size()?;
-    let mut rain = Rain::new(cols, rows, cfg.theme, cfg.density, cfg.mutation);
+    let mut rain = Rain::new(cols, rows, cfg.density, cfg.mutation);
 
     let frame = Duration::from_secs_f64(1.0 / cfg.fps as f64);
     let mut last = Instant::now();
@@ -205,11 +196,6 @@ fn handle_key(k: KeyEvent, cfg: &mut Config, rain: &mut Rain, paused: &mut bool)
         KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => return true,
         KeyCode::Char('q') | KeyCode::Esc => return true,
         KeyCode::Char(' ') => *paused = !*paused,
-        KeyCode::Char('1') => set_theme(cfg, rain, Theme::Green),
-        KeyCode::Char('2') => set_theme(cfg, rain, Theme::Cyan),
-        KeyCode::Char('3') => set_theme(cfg, rain, Theme::Amber),
-        KeyCode::Char('4') => set_theme(cfg, rain, Theme::Purple),
-        KeyCode::Char('5') => set_theme(cfg, rain, Theme::Rainbow),
         KeyCode::Char('r') => rain.splash_random(),
         KeyCode::Char('w') => rain.wave(),
         KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -225,15 +211,10 @@ fn handle_key(k: KeyEvent, cfg: &mut Config, rain: &mut Rain, paused: &mut bool)
     false
 }
 
-fn set_theme(cfg: &mut Config, rain: &mut Rain, theme: Theme) {
-    cfg.theme = theme;
-    rebuild(cfg, rain);
-}
-
 /// Rebuild the simulation in place at the current terminal size with new params.
 fn rebuild(cfg: &Config, rain: &mut Rain) {
     if let Ok((c, r)) = terminal::size() {
-        *rain = Rain::new(c, r, cfg.theme, cfg.density, cfg.mutation);
+        *rain = Rain::new(c, r, cfg.density, cfg.mutation);
     }
 }
 

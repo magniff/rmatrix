@@ -1,5 +1,8 @@
 # rmatrix
 
+<img width="1501" height="869" alt="Screenshot 2026-06-12 at 12 25 30 PM" src="https://github.com/user-attachments/assets/90083510-b9e5-4cde-bd96-fbd668334994" />
+
+
 Digital rain for your terminal — like `cmatrix`, but with richer effects:
 true-color glow trails, brightness ripples that wash over the rain, and the
 film's actual glyph mix.

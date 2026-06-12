@@ -6,6 +6,7 @@
 //! glyphs mutate in place so the rain shimmers instead of scrolling rigidly.
 
 use crate::glyphs;
+use crate::ripple::Ripples;
 use crate::theme::Theme;
 use crossterm::style::Color;
 use rand::rngs::SmallRng;
@@ -23,17 +24,26 @@ struct Stream {
     glyphs: Vec<char>,
 }
 
-/// A single rendered cell: glyph + foreground color.
+/// A single rendered cell: glyph + foreground color + weight.
 #[derive(Clone, Copy, PartialEq)]
 struct Cell {
     ch: char,
     color: Color,
+    bold: bool,
 }
 
 impl Cell {
     const BLANK: Cell = Cell {
         ch: ' ',
         color: Color::Reset,
+        bold: false,
+    };
+    /// The cell to the right of a double-width glyph: painted by that glyph,
+    /// so the renderer must never write to it itself.
+    const SHADOW: Cell = Cell {
+        ch: '\0',
+        color: Color::Reset,
+        bold: false,
     };
 }
 
@@ -55,11 +65,17 @@ pub struct Rain {
     /// How fast glyphs mutate, scaled per second.
     mutation: f32,
     pool: Vec<char>,
+    /// `pool[..narrow]` are single-column glyphs; the rest are double-width
+    /// kanji, which must not spawn where there's no second column.
+    narrow: usize,
+    /// Travelling brightness waves layered over the rain.
+    ripples: Ripples,
 }
 
 impl Rain {
     pub fn new(cols: u16, rows: u16, theme: Theme, density: f32, mutation: f32) -> Self {
         let n = cols as usize * rows as usize;
+        let (pool, narrow) = glyphs::alphabet();
         let mut rain = Rain {
             cols,
             rows,
@@ -71,7 +87,9 @@ impl Rain {
             rng: SmallRng::from_entropy(),
             density,
             mutation,
-            pool: glyphs::alphabet(),
+            pool,
+            narrow,
+            ripples: Ripples::new(cols, rows),
         };
         // Seed the screen so it isn't empty on the first frame.
         for _ in 0..(cols as usize / 2) {
@@ -87,12 +105,23 @@ impl Rain {
         *self = Rain::new(cols, rows, self.theme, self.density, self.mutation);
     }
 
+    /// The glyph pool a column may draw from: the last column can't host
+    /// double-width kanji (no second column to paint into).
+    fn col_pool(pool: &[char], narrow: usize, col: u16, cols: u16) -> &[char] {
+        if col + 1 < cols {
+            pool
+        } else {
+            &pool[..narrow]
+        }
+    }
+
     fn spawn(&mut self, col: u16, head: f32) {
         let max_len = ((self.rows as f32) * 0.7) as usize;
         let len = self.rng.gen_range(6..=max_len.max(8));
         let speed = self.rng.gen_range(6.0..26.0);
+        let pool = Self::col_pool(&self.pool, self.narrow, col, self.cols);
         let glyphs = (0..len)
-            .map(|_| glyphs::random_glyph(&mut self.rng, &self.pool))
+            .map(|_| glyphs::random_glyph(&mut self.rng, pool))
             .collect();
         self.streams[col as usize].push(Stream {
             head,
@@ -106,12 +135,15 @@ impl Rain {
     pub fn update(&mut self, dt: f32) {
         let rows = self.rows as f32;
 
+        self.ripples.update(dt, &mut self.rng);
+
         // Borrow the fields the hot loop touches disjointly so the closure
         // below doesn't conflict with the `self.streams` borrow.
         let Rain {
             streams,
             rng,
             pool,
+            narrow,
             mutation,
             density,
             cols,
@@ -121,6 +153,7 @@ impl Rain {
         let density = *density;
 
         for col in 0..*cols {
+            let pool = Self::col_pool(pool, *narrow, col, *cols);
             let streams = &mut streams[col as usize];
 
             // Advance, mutate, and retire streams.
@@ -205,21 +238,61 @@ impl Rain {
                     self.bright[idx] = brightness;
 
                     let is_head = d == 0;
-                    let color = self.theme.color(brightness, is_head, col, self.cols);
+                    // Ripples boost how lit the cell is, but don't take part
+                    // in the overlap contest above — that stays on the
+                    // trail's own brightness. Past 1.0 the theme bleeds the
+                    // color toward white, so overdriven cells glow hot.
+                    let boost = self.ripples.boost(col, r as u16);
+                    let lit = brightness + boost;
+                    let color = self.theme.color(lit, is_head, col, self.cols);
                     self.back[idx] = Cell {
                         ch: s.glyphs[d],
                         color,
+                        // Heads are bold, and so is anything a wavefront is
+                        // hitting hard enough to clearly light up — the
+                        // threshold keeps faint shimmer from flickering bold.
+                        bold: is_head || boost > 0.35,
                     };
+                }
+            }
+        }
+
+        // Double-width glyphs paint into the next column, so shadow the cell
+        // to their right: the renderer skips shadows, and any glyph another
+        // stream composited there would otherwise fight with the kanji.
+        for row in 0..self.rows as usize {
+            for col in 0..cols.saturating_sub(1) {
+                let idx = row * cols + col;
+                if glyphs::is_wide(self.back[idx].ch) {
+                    self.back[idx + 1] = Cell::SHADOW;
                 }
             }
         }
     }
 
+    /// Drop a point ripple centered on a cell (e.g. a mouse click).
+    pub fn splash(&mut self, col: u16, row: u16) {
+        self.ripples.splash(col, row, &mut self.rng);
+    }
+
+    /// Drop a point ripple somewhere random on screen.
+    pub fn splash_random(&mut self) {
+        let col = self.rng.gen_range(0..self.cols.max(1));
+        let row = self.rng.gen_range(0..self.rows.max(1));
+        self.splash(col, row);
+    }
+
+    /// Launch a wide wave that sweeps in from off-screen.
+    pub fn wave(&mut self) {
+        self.ripples.wave(&mut self.rng);
+    }
+
     /// Emit only the cells that changed since the last frame.
     ///
-    /// Returns a list of `(col, row, cell)` draw ops; the caller turns these
-    /// into terminal writes. Front buffer is updated to match.
-    pub fn diff(&mut self) -> Vec<(u16, u16, char, Color)> {
+    /// Returns a list of `(col, row, glyph, color, bold)` draw ops; the
+    /// caller turns these into terminal writes. Front buffer is updated to
+    /// match.
+    pub fn diff(&mut self) -> Vec<(u16, u16, char, Color, bool)> {
         let cols = self.cols as usize;
         let mut ops = Vec::new();
         for row in 0..self.rows {
@@ -228,7 +301,12 @@ impl Rain {
                 let nb = self.back[idx];
                 if nb != self.front[idx] {
                     self.front[idx] = nb;
-                    ops.push((col, row, nb.ch, nb.color));
+                    // Shadow cells are painted by the wide glyph to their
+                    // left (whose op precedes this cell in row-major order),
+                    // so track them in the front buffer but emit nothing.
+                    if nb != Cell::SHADOW {
+                        ops.push((col, row, nb.ch, nb.color, nb.bold));
+                    }
                 }
             }
         }

@@ -53,31 +53,41 @@ impl Theme {
 
     /// Color for a cell.
     ///
-    /// * `brightness` in `0.0..=1.0` is how lit the cell is (1.0 at the head).
+    /// * `brightness` is how lit the cell is: `0.0..=1.0` along the trail
+    ///   (1.0 at the head), and *above* 1.0 when a ripple overdrives the
+    ///   cell — the excess bleeds the color toward white so hot code glows.
     /// * `is_head` gets the hot, near-white leading glyph.
     pub fn color(self, brightness: f32, is_head: bool, col: u16, total_cols: u16) -> Color {
         let (br, bg, bb) = self.base(col, total_cols);
 
-        if is_head {
+        let (mut r, mut g, mut b) = if is_head {
             // Hot head: blow the base color out toward white for a glow/bloom.
             let mix = 0.75; // how far toward white
-            let r = lerp(br as f32, 255.0, mix);
-            let g = lerp(bg as f32, 255.0, mix);
-            let b = lerp(bb as f32, 255.0, mix);
-            return Color::Rgb {
-                r: r as u8,
-                g: g as u8,
-                b: b as u8,
-            };
+            (
+                lerp(br as f32, 255.0, mix),
+                lerp(bg as f32, 255.0, mix),
+                lerp(bb as f32, 255.0, mix),
+            )
+        } else {
+            // Gamma-shaped falloff makes the trail linger bright then drop off
+            // fast, which reads as a glow rather than a linear ramp.
+            let t = brightness.clamp(0.0, 1.0).powf(1.6);
+            (br as f32 * t, bg as f32 * t, bb as f32 * t)
+        };
+
+        // Overdrive: ripple-boosted brightness beyond 1.0 bleeds toward
+        // white (capped short of pure white so the theme still tints it).
+        let over = (brightness - 1.0).clamp(0.0, 1.0) * 0.85;
+        if over > 0.0 {
+            r = lerp(r, 255.0, over);
+            g = lerp(g, 255.0, over);
+            b = lerp(b, 255.0, over);
         }
 
-        // Gamma-shaped falloff makes the trail linger bright then drop off fast,
-        // which reads as a glow rather than a linear ramp.
-        let t = brightness.clamp(0.0, 1.0).powf(1.6);
         Color::Rgb {
-            r: (br as f32 * t) as u8,
-            g: (bg as f32 * t) as u8,
-            b: (bb as f32 * t) as u8,
+            r: r as u8,
+            g: g as u8,
+            b: b as u8,
         }
     }
 }

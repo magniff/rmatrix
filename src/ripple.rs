@@ -112,7 +112,7 @@ impl Ripples {
             age: 0.0,
             ttl: (dist + diag) / speed,
             speed,
-            width: rng.gen_range(10.0..18.0),
+            width: rng.gen_range(4.0..8.0),
             // Waves vary too, from a gentle swell to a searing front.
             amp: rng.gen_range(0.3..1.1),
         });

@@ -3,6 +3,7 @@
 
 mod glyphs;
 mod rain;
+mod ripple;
 mod theme;
 
 use std::io::{self, Write};
@@ -12,6 +13,7 @@ use std::time::{Duration, Instant};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseEventKind,
 };
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{
@@ -58,6 +60,9 @@ KEYS (while running):
     space              pause / resume
     1..5               switch theme (green/cyan/amber/purple/rainbow)
     + / -              faster / slower glyph mutation
+    r                  drop a ripple at a random spot
+    w                  send a wide wave sweeping across
+    mouse click        drop a ripple right there
 ";
 
 fn parse_args() -> Result<Config, String> {
@@ -159,6 +164,11 @@ fn event_loop(out: &mut io::Stdout, cfg: &mut Config) -> io::Result<()> {
                         return Ok(()); // quit requested
                     }
                 }
+                Event::Mouse(m) => {
+                    if let MouseEventKind::Down(_) = m.kind {
+                        rain.splash(m.column, m.row);
+                    }
+                }
                 Event::Resize(c, r) => {
                     cols = c;
                     rows = r;
@@ -197,6 +207,8 @@ fn handle_key(k: KeyEvent, cfg: &mut Config, rain: &mut Rain, paused: &mut bool)
         KeyCode::Char('3') => set_theme(cfg, rain, Theme::Amber),
         KeyCode::Char('4') => set_theme(cfg, rain, Theme::Purple),
         KeyCode::Char('5') => set_theme(cfg, rain, Theme::Rainbow),
+        KeyCode::Char('r') => rain.splash_random(),
+        KeyCode::Char('w') => rain.wave(),
         KeyCode::Char('+') | KeyCode::Char('=') => {
             cfg.mutation = (cfg.mutation * 1.5).min(120.0);
             rebuild(cfg, rain);

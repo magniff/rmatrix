@@ -15,7 +15,9 @@ use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
     MouseEventKind,
 };
-use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+use crossterm::style::{
+    Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor,
+};
 use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -140,6 +142,7 @@ fn run(mut cfg: Config) -> io::Result<()> {
     // Teardown — restore terminal regardless of how the loop ended.
     let _ = out.execute(DisableMouseCapture);
     let _ = out.execute(Show);
+    let _ = out.execute(SetAttribute(Attribute::Reset));
     let _ = out.execute(ResetColor);
     let _ = out.execute(LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
@@ -236,8 +239,17 @@ fn rebuild(cfg: &Config, rain: &mut Rain) {
 
 fn render(out: &mut io::Stdout, rain: &mut Rain) -> io::Result<()> {
     let mut last_color: Option<Color> = None;
-    for (col, row, ch, color) in rain.diff() {
+    let mut last_bold: Option<bool> = None;
+    for (col, row, ch, color, bold) in rain.diff() {
         out.queue(MoveTo(col, row))?;
+        if last_bold != Some(bold) {
+            out.queue(SetAttribute(if bold {
+                Attribute::Bold
+            } else {
+                Attribute::NormalIntensity
+            }))?;
+            last_bold = Some(bold);
+        }
         if last_color != Some(color) {
             out.queue(SetForegroundColor(color))?;
             last_color = Some(color);

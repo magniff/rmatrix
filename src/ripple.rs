@@ -94,7 +94,8 @@ impl Ripples {
             ttl: rng.gen_range(2.0..3.5),
             speed: rng.gen_range(18.0..36.0),
             width: rng.gen_range(3.0..6.0),
-            amp: rng.gen_range(0.5..0.9),
+            // Wide range: some splashes barely shimmer, some burn white-hot.
+            amp: rng.gen_range(0.4..1.3),
         });
     }
 
@@ -112,7 +113,8 @@ impl Ripples {
             ttl: (dist + diag) / speed,
             speed,
             width: rng.gen_range(10.0..18.0),
-            amp: rng.gen_range(0.35..0.6),
+            // Waves vary too, from a gentle swell to a searing front.
+            amp: rng.gen_range(0.3..1.1),
         });
     }
 

@@ -24,23 +24,26 @@ struct Stream {
     glyphs: Vec<char>,
 }
 
-/// A single rendered cell: glyph + foreground color.
+/// A single rendered cell: glyph + foreground color + weight.
 #[derive(Clone, Copy, PartialEq)]
 struct Cell {
     ch: char,
     color: Color,
+    bold: bool,
 }
 
 impl Cell {
     const BLANK: Cell = Cell {
         ch: ' ',
         color: Color::Reset,
+        bold: false,
     };
     /// The cell to the right of a double-width glyph: painted by that glyph,
     /// so the renderer must never write to it itself.
     const SHADOW: Cell = Cell {
         ch: '\0',
         color: Color::Reset,
+        bold: false,
     };
 }
 
@@ -237,12 +240,14 @@ impl Rain {
                     let is_head = d == 0;
                     // Ripples boost how lit the cell is, but don't take part
                     // in the overlap contest above — that stays on the
-                    // trail's own brightness.
-                    let lit = (brightness + self.ripples.boost(col, r as u16)).min(1.0);
+                    // trail's own brightness. Past 1.0 the theme bleeds the
+                    // color toward white, so overdriven cells glow hot.
+                    let lit = brightness + self.ripples.boost(col, r as u16);
                     let color = self.theme.color(lit, is_head, col, self.cols);
                     self.back[idx] = Cell {
                         ch: s.glyphs[d],
                         color,
+                        bold: is_head,
                     };
                 }
             }
@@ -280,9 +285,10 @@ impl Rain {
 
     /// Emit only the cells that changed since the last frame.
     ///
-    /// Returns a list of `(col, row, cell)` draw ops; the caller turns these
-    /// into terminal writes. Front buffer is updated to match.
-    pub fn diff(&mut self) -> Vec<(u16, u16, char, Color)> {
+    /// Returns a list of `(col, row, glyph, color, bold)` draw ops; the
+    /// caller turns these into terminal writes. Front buffer is updated to
+    /// match.
+    pub fn diff(&mut self) -> Vec<(u16, u16, char, Color, bool)> {
         let cols = self.cols as usize;
         let mut ops = Vec::new();
         for row in 0..self.rows {
@@ -295,7 +301,7 @@ impl Rain {
                     // left (whose op precedes this cell in row-major order),
                     // so track them in the front buffer but emit nothing.
                     if nb != Cell::SHADOW {
-                        ops.push((col, row, nb.ch, nb.color));
+                        ops.push((col, row, nb.ch, nb.color, nb.bold));
                     }
                 }
             }

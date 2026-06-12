@@ -242,12 +242,16 @@ impl Rain {
                     // in the overlap contest above — that stays on the
                     // trail's own brightness. Past 1.0 the theme bleeds the
                     // color toward white, so overdriven cells glow hot.
-                    let lit = brightness + self.ripples.boost(col, r as u16);
+                    let boost = self.ripples.boost(col, r as u16);
+                    let lit = brightness + boost;
                     let color = self.theme.color(lit, is_head, col, self.cols);
                     self.back[idx] = Cell {
                         ch: s.glyphs[d],
                         color,
-                        bold: is_head,
+                        // Heads are bold, and so is anything a wavefront is
+                        // hitting hard enough to clearly light up — the
+                        // threshold keeps faint shimmer from flickering bold.
+                        bold: is_head || boost > 0.35,
                     };
                 }
             }

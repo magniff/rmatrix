@@ -59,8 +59,8 @@ impl Ripples {
             active: Vec::new(),
             vis_w: (cols as f32).max(1.0),
             vis_h: (rows as f32 * 2.0).max(1.0),
-            splash_rate: 0.25,
-            wave_rate: 0.12,
+            splash_rate: 0.5,
+            wave_rate: 0.25,
         }
     }
 
@@ -92,7 +92,7 @@ impl Ripples {
             cy: y,
             age: 0.0,
             ttl: rng.gen_range(2.0..3.5),
-            speed: rng.gen_range(14.0..28.0),
+            speed: rng.gen_range(18.0..36.0),
             width: rng.gen_range(3.0..6.0),
             amp: rng.gen_range(0.5..0.9),
         });
@@ -104,7 +104,7 @@ impl Ripples {
         let diag = (self.vis_w.powi(2) + self.vis_h.powi(2)).sqrt();
         let dist = diag * 1.5;
         let theta = rng.gen_range(0.0..std::f32::consts::TAU);
-        let speed = rng.gen_range(25.0..45.0);
+        let speed = rng.gen_range(33.0..59.0);
         self.active.push(Ripple {
             cx: self.vis_w / 2.0 + theta.cos() * dist,
             cy: self.vis_h / 2.0 + theta.sin() * dist,

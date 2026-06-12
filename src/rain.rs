@@ -125,7 +125,20 @@ impl Rain {
 
             // Advance, mutate, and retire streams.
             streams.retain_mut(|s| {
+                let old_head = s.head.floor() as i32;
                 s.head += s.speed * dt;
+                let new_head = s.head.floor() as i32;
+
+                // Glyphs must stay anchored to screen rows. The trail is
+                // indexed relative to the head, so each time the head crosses
+                // a row boundary we shift a fresh glyph in at the head and
+                // drop the tail's — otherwise every row's character would
+                // visibly jump up one cell.
+                let crossed = (new_head - old_head).clamp(0, s.len as i32);
+                for _ in 0..crossed {
+                    s.glyphs.pop();
+                    s.glyphs.insert(0, glyphs::random_glyph(rng, pool));
+                }
 
                 // Occasionally swap glyphs so the trail shimmers. Probability
                 // scales with dt so it's frame-rate independent.
@@ -238,6 +251,32 @@ mod tests {
             total_ops += rain.diff().len();
         }
         assert!(total_ops > 0, "expected the rain to draw something");
+    }
+
+    #[test]
+    fn trail_glyphs_stay_anchored_to_screen_rows() {
+        // With mutation disabled, a character drawn at a given cell must stay
+        // the same as the stream descends past it — the head reveals new
+        // glyphs below, it never shifts the existing trail. One column and
+        // zero density guarantee a single stream, so overlap (where the
+        // brighter stream legitimately wins a cell) can't confuse the check.
+        let mut rain = Rain::new(1, 40, Theme::Green, 0.0, 0.0);
+        rain.streams[0].clear();
+        rain.spawn(0, 5.0);
+        rain.update(1.0 / 60.0);
+        let before = rain.back.clone();
+        for _ in 0..30 {
+            rain.update(1.0 / 60.0);
+        }
+        for idx in 0..before.len() {
+            let (b, a) = (before[idx], rain.back[idx]);
+            if b.ch != ' ' && a.ch != ' ' {
+                assert_eq!(
+                    b.ch, a.ch,
+                    "glyph at cell {idx} changed while still inside a trail"
+                );
+            }
+        }
     }
 
     #[test]
